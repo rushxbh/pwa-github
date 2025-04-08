@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#2196F3">
+  <title>Simple PWA with Cache Storage</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    header {
+      background-color: #2196F3;
+      color: white;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .card {
+      background-color: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button {
+      background-color: #2196F3;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 5px;
+      cursor: pointer;
+      margin-right: 10px;
+      margin-bottom: 10px;
+    }
+    button:hover {
+      background-color: #0b7dda;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    input {
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      margin-right: 10px;
+      width: 70%;
+      max-width: 300px;
+    }
+    .notes-container {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .note-item {
+      padding: 10px;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .network-status {
+      padding: 5px 10px;
+      border-radius: 15px;
+      font-size: 12px;
+      display: inline-block;
+      margin-left: 10px;
+    }
+    .online {
+      background-color: #4CAF50;
+      color: white;
+    }
+    .offline {
+      background-color: #F44336;
+      color: white;
+    }
+    .sync-pending {
+      border-left: 4px solid #FFC107;
+      padding-left: 16px;
+    }
+    .loading {
+      text-align: center;
+      padding: 20px;
+    }
+    .installation-guide {
+      font-size: 14px;
+      color: #666;
+      margin-top: 20px;
+    }
+    #log {
+      background-color: #f8f8f8;
+      border: 1px solid #ddd;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      height: 120px;
+      overflow-y: auto;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+    .storage-info {
+      font-size: 12px;
+      color: #666;
+      margin-top: 10px;
+      background-color: #f0f0f0;
+      padding: 10px;
+      border-radius: 5px;
+      border-left: 4px solid #2196F3;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Simple PWA Notes <span id="network-status" class="network-status">...</span></h1>
+  </header>
+
+  <div class="card">
+    <h2>Add New Note</h2>
+    <div>
+      <input type="text" id="note-input" placeholder="Enter your note">
+      <button id="add-note-btn">Add Note</button>
+    </div>
+    <div>
+      <button id="sync-btn">Force Sync</button>
+      <button id="clear-btn">Clear All Notes</button>
+    </div>
+    <div id="notification-status"></div>
+    <div class="storage-info">
+      <strong>Storage:</strong> Your notes are saved in Cache Storage and will persist between page refreshes
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Your Notes</h2>
+    <div id="notes-container" class="notes-container">
+      <div class="loading">Loading notes...</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Console Log</h3>
+    <div id="log"></div>
+  </div>
+
+  <script>
+    // Constants
+    const CACHE_NAME = 'notes-cache-v1';
+    const DATA_CACHE_NAME = 'notes-data-v1';
+    
+    // Application state
+    const APP_STATE = {
+      notes: [],
+      isOnline: navigator.onLine,
+      syncInProgress: false
+    };
+
+    // DOM elements
+    const networkStatus = document.getElementById('network-status');
+    const notesContainer = document.getElementById('notes-container');
+    const noteInput = document.getElementById('note-input');
+    const addNoteBtn = document.getElementById('add-note-btn');
+    const syncBtn = document.getElementById('sync-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    const notificationStatus = document.getElementById('notification-status');
+    const logEl = document.getElementById('log');
+
+    // Custom logging function
+    function log(message) {
+      console.log(message);
+      const entry = document.createElement('div');
+      entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Create and link manifest
+    function createManifest() {
+      const link = document.createElement('link');
+      link.rel = 'manifest';
+      
+      const manifestData = {
+        name: "Simple PWA Notes",
+        short_name: "PWA Notes",
+        description: "A simple PWA with offline support and cache storage",
+        start_url: "./",
+        display: "standalone",
+        background_color: "#f5f5f5",
+        theme_color: "#2196F3",
+        icons: [
+          {
+            src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='192' height='192' viewBox='0 0 24 24'%3E%3Cpath fill='%232196F3' d='M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2z'/%3E%3C/svg%3E",
+            sizes: "192x192",
+            type: "image/svg+xml"
+          },
+          {
+            src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 24 24'%3E%3Cpath fill='%232196F3' d='M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2z'/%3E%3C/svg%3E",
+            sizes: "512x512",
+            type: "image/svg+xml"
+          }
+        ]
+      };
+      
+      const manifestBlob = new Blob([JSON.stringify(manifestData)], {type: 'application/json'});
+      link.href = URL.createObjectURL(manifestBlob);
+      document.head.appendChild(link);
+      log('Manifest created and linked');
+    }
+
+    // Register service worker
+    async function registerServiceWorker() {
+      if (!('serviceWorker' in navigator)) {
+        log('Service Worker not supported in this browser');
+        return;
+      }
+      
+      try {
+        // Create service worker code
+        const swCode = `
+          // Service Worker for Simple PWA with Cache Storage
+          const CACHE_NAME = 'notes-cache-v1';
+          const DATA_CACHE_NAME = 'notes-data-v1';
+          
+          // Files to cache
+          const urlsToCache = [
+            './',
+            './index.html'
+          ];
+          
+          // Install event
+          self.addEventListener('install', event => {
+            console.log('[ServiceWorker] Install');
+            event.waitUntil(
+              caches.open(CACHE_NAME).then(cache => {
+                console.log('[ServiceWorker] Caching app shell');
+                return cache.addAll(urlsToCache);
+              })
+            );
+          });
+          
+          // Activate event
+          self.addEventListener('activate', event => {
+            console.log('[ServiceWorker] Activate');
+            event.waitUntil(
+              caches.keys().then(keyList => {
+                return Promise.all(keyList.map(key => {
+                  if (key !== CACHE_NAME && key !== DATA_CACHE_NAME) {
+                    console.log('[ServiceWorker] Removing old cache', key);
+                    return caches.delete(key);
+                  }
+                }));
+              })
+            );
+            return self.clients.claim();
+          });
+          
+          // Fetch event with cache strategy
+          self.addEventListener('fetch', event => {
+            if (event.request.url.includes('/api/')) {
+              // For API requests use "Network first, fallback to cache" strategy
+              event.respondWith(
+                caches.open(DATA_CACHE_NAME).then(cache => {
+                  return fetch(event.request)
+                    .then(response => {
+                      if (response.status === 200) {
+                        cache.put(event.request.url, response.clone());
+                      }
+                      return response;
+                    })
+                    .catch(() => {
+                      return cache.match(event.request);
+                    });
+                })
+              );
+            } else {
+              // For page navigation use "Cache first, fallback to network" strategy
+              event.respondWith(
+                caches.match(event.request).then(response => {
+                  return response || fetch(event.request);
+                })
+              );
+            }
+          });
+          
+          // Message event
+          self.addEventListener('message', event => {
+            if (event.data.action === 'skipWaiting') {
+              self.skipWaiting();
+            }
+          });
+        `;
+        
+        // Create a Blob containing the service worker code
+        const swBlob = new Blob([swCode], {type: 'application/javascript'});
+        const swUrl = URL.createObjectURL(swBlob);
+        
+        // Register the service worker
+        const registration = await navigator.serviceWorker.register(swUrl, {scope: './'});
+        log(`Service Worker registered with scope: ${registration.scope}`);
+        
+        return registration;
+      } catch (error) {
+        log(`Service Worker registration failed: ${error}`);
+        return null;
+      }
+    }
+
+    // Update network status UI
+    function updateNetworkStatus() {
+      if (APP_STATE.isOnline) {
+        networkStatus.textContent = 'Online';
+        networkStatus.className = 'network-status online';
+        syncBtn.disabled = false;
+      } else {
+        networkStatus.textContent = 'Offline';
+        networkStatus.className = 'network-status offline';
+        syncBtn.disabled = true;
+      }
+    }
+
+    // Save data to cache storage
+    async function saveToCache(data) {
+      try {
+        const cache = await caches.open(DATA_CACHE_NAME);
+        const response = new Response(JSON.stringify(data));
+        await cache.put('./notes-data', response);
+        log('Notes saved to cache storage');
+      } catch (error) {
+        log(`Error saving to cache: ${error}`);
+      }
+    }
+
+    // Load data from cache storage
+    async function loadFromCache() {
+      try {
+        const cache = await caches.open(DATA_CACHE_NAME);
+        const response = await cache.match('./notes-data');
+        
+        if (!response) {
+          log('No data found in cache');
+          return { notes: [], syncQueue: [] };
+        }
+        
+        const data = await response.json();
+        log(`Loaded ${data.notes.length} notes from cache`);
+        return data;
+      } catch (error) {
+        log(`Error loading from cache: ${error}`);
+        return { notes: [], syncQueue: [] };
+      }
+    }
+
+    // Load notes from cache
+    async function loadNotes() {
+      const data = await loadFromCache();
+      APP_STATE.notes = data.notes || [];
+      renderNotes();
+      
+      if ((data.syncQueue || []).length > 0 && APP_STATE.isOnline) {
+        syncData();
+      }
+    }
+
+    // Save a note
+    async function saveNote(noteText) {
+      const note = {
+        id: Date.now().toString(),
+        text: noteText,
+        timestamp: Date.now(),
+        synced: false
+      };
+      
+      // Load current data
+      const data = await loadFromCache();
+      
+      // Update notes array
+      data.notes = [...(data.notes || []), note];
+      
+      // Update sync queue
+      if (!data.syncQueue) data.syncQueue = [];
+      data.syncQueue.push({
+        id: note.id,
+        action: 'add',
+        data: note,
+        timestamp: Date.now()
+      });
+      
+      // Save updated data to cache
+      await saveToCache(data);
+      
+      // Update app state
+      APP_STATE.notes.push(note);
+      renderNotes();
+      
+      // Try to sync if online
+      if (APP_STATE.isOnline) {
+        syncData();
+      }
+      
+      log(`Note saved: ${noteText.substring(0, 20)}${noteText.length > 20 ? '...' : ''}`);
+      return note;
+    }
+
+    // Delete a note
+    async function deleteNote(noteId) {
+      // Load current data
+      const data = await loadFromCache();
+      
+      // Remove note from notes array
+      data.notes = (data.notes || []).filter(note => note.id !== noteId);
+      
+      // Update sync queue
+      if (!data.syncQueue) data.syncQueue = [];
+      data.syncQueue.push({
+        id: Date.now().toString(),
+        action: 'delete',
+        data: { id: noteId },
+        timestamp: Date.now()
+      });
+      
+      // Save updated data to cache
+      await saveToCache(data);
+      
+      // Update app state
+      APP_STATE.notes = APP_STATE.notes.filter(note => note.id !== noteId);
+      renderNotes();
+      
+      // Try to sync if online
+      if (APP_STATE.isOnline) {
+        syncData();
+      }
+      
+      log(`Note deleted: ${noteId}`);
+    }
+
+    // Clear all notes
+    async function clearAllNotes() {
+      if (confirm('Are you sure you want to delete all notes?')) {
+        // Save empty data to cache
+        await saveToCache({ notes: [], syncQueue: [] });
+        
+        // Update app state
+        APP_STATE.notes = [];
+        renderNotes();
+        
+        log('All notes cleared');
+      }
+    }
+
+    // Render notes to the DOM
+    function renderNotes() {
+      if (APP_STATE.notes.length === 0) {
+        notesContainer.innerHTML = '<div class="note-item">No notes yet. Add one above!</div>';
+        return;
+      }
+      
+      // Sort notes by timestamp (newest first)
+      const sortedNotes = [...APP_STATE.notes].sort((a, b) => b.timestamp - a.timestamp);
+      
+      notesContainer.innerHTML = sortedNotes.map(note => {
+        const syncClass = note.synced ? '' : 'sync-pending';
+        const syncStatus = note.synced ? 'Synced' : 'Pending sync';
+        
+        return `
+          <div class="note-item ${syncClass}" data-id="${note.id}">
+            <div>
+              <div>${note.text}</div>
+              <small>${new Date(note.timestamp).toLocaleString()} - ${syncStatus}</small>
+            </div>
+            <button class="delete-btn" data-id="${note.id}">Delete</button>
+          </div>
+        `;
+      }).join('');
+      
+      // Add event listeners to delete buttons
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const noteId = e.target.dataset.id;
+          deleteNote(noteId);
+        });
+      });
+    }
+
+    // Simulate sync with server
+    async function syncData() {
+      if (APP_STATE.syncInProgress || !APP_STATE.isOnline) {
+        return;
+      }
+      
+      APP_STATE.syncInProgress = true;
+      syncBtn.disabled = true;
+      syncBtn.textContent = 'Syncing...';
+      
+      try {
+        log('Starting sync process...');
+        
+        // Load current data
+        const data = await loadFromCache();
+        const pendingSyncs = data.syncQueue || [];
+        
+        if (pendingSyncs.length === 0) {
+          log('No data to sync');
+          APP_STATE.syncInProgress = false;
+          syncBtn.disabled = false;
+          syncBtn.textContent = 'Force Sync';
+          return;
+        }
+        
+        // Simulate server delay
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        // Mark notes as synced
+        pendingSyncs.forEach(sync => {
+          if (sync.action === 'add') {
+            // Update note in cache
+            const noteIndex = data.notes.findIndex(note => note.id === sync.data.id);
+            if (noteIndex !== -1) {
+              data.notes[noteIndex].synced = true;
+              
+              // Update app state
+              const appNoteIndex = APP_STATE.notes.findIndex(note => note.id === sync.data.id);
+              if (appNoteIndex !== -1) {
+                APP_STATE.notes[appNoteIndex].synced = true;
+              }
+            }
+          }
+        });
+        
+        // Clear sync queue
+        data.syncQueue = [];
+        
+        // Save updated data to cache
+        await saveToCache(data);
+        
+        renderNotes();
+        
+        log(`Successfully synced ${pendingSyncs.length} items`);
+        
+        // Show notification
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('Notes Synced', {
+            body: `Successfully synced ${pendingSyncs.length} items`,
+            icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 24 24"%3E%3Cpath fill="%232196F3" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2z"/%3E%3C/svg%3E'
+          });
+        }
+      } catch (error) {
+        log(`Error syncing data: ${error.message}`);
+      } finally {
+        APP_STATE.syncInProgress = false;
+        syncBtn.disabled = false;
+        syncBtn.textContent = 'Force Sync';
+      }
+    }
+
+    // Event listeners
+    window.addEventListener('load', () => {
+      log('Application loaded');
+      createManifest();
+      registerServiceWorker();
+      updateNetworkStatus();
+      loadNotes();
+    });
+
+    window.addEventListener('online', () => {
+      APP_STATE.isOnline = true;
+      updateNetworkStatus();
+      log('Network connection restored');
+      syncData();
+    });
+
+    window.addEventListener('offline', () => {
+      APP_STATE.isOnline = false;
+      updateNetworkStatus();
+      log('Network connection lost');
+    });
+
+    addNoteBtn.addEventListener('click', () => {
+      const noteText = noteInput.value.trim();
+      if (noteText) {
+        saveNote(noteText);
+        noteInput.value = '';
+      }
+    });
+
+    noteInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const noteText = noteInput.value.trim();
+        if (noteText) {
+          saveNote(noteText);
+          noteInput.value = '';
+        }
+      }
+    });
+
+    syncBtn.addEventListener('click', syncData);
+    clearBtn.addEventListener('click', clearAllNotes);
+  </script>
+</body>
+</html>
